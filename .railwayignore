@@ -1,0 +1,25 @@
+# Ignore all Next.js frontend files
+src/
+node_modules/
+.next/
+next.config.js
+next-env.d.ts
+tsconfig.json
+tailwind.config.ts
+postcss.config.js
+package.json
+package-lock.json
+
+# Ignore frontend-specific files
+*.tsx
+*.ts
+!*.py
+
+# Ignore documentation (not needed for deployment)
+*.md
+!README.md
+
+# Ignore Vercel config
+vercel.json
+.vercelignore
+

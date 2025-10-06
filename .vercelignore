@@ -1,0 +1,16 @@
+# Ignore all Python backend files
+*.py
+requirements.txt
+Procfile
+__pycache__/
+*.pyc
+
+# Ignore backend-specific folders
+uploads/
+models/
+static/
+
+# Ignore documentation (not needed for deployment)
+*.md
+!README.md
+
