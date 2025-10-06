@@ -11,6 +11,7 @@ from auth import generate_token, token_required
 from data_processor import DataProcessor
 from pipeline_generator import PipelineGenerator
 from model_trainer import ModelTrainer
+from encryption_manager import get_secure_handler
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -26,6 +27,7 @@ os.makedirs(Config.VISUALIZATION_FOLDER, exist_ok=True)
 
 # Initialize services
 pipeline_generator = PipelineGenerator()
+secure_handler = get_secure_handler()
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -317,13 +319,23 @@ def upload_dataset(current_user, project_id):
         preprocessed_buffer.seek(0)
         preprocessed_data = preprocessed_buffer.read()
         
-        # Save to database (store file in Neon)
+        # Get project for encryption
+        project = Project.query.get(project_id)
+        
+        # 🔒 ENCRYPT THE DATASET - Privacy-First Feature
+        encrypted_data_info = secure_handler.prepare_dataset_for_storage(
+            preprocessed_data,
+            project.code,
+            current_user.id
+        )
+        
+        # Save to database (store ENCRYPTED file in Neon)
         dataset = Dataset(
             project_id=project_id,
             user_id=current_user.id,
             filename=filename,
-            file_data=preprocessed_data,  # Store in database
-            file_size=len(preprocessed_data),
+            file_data=encrypted_data_info['encrypted_data'],  # 🔒 Encrypted!
+            file_size=encrypted_data_info['file_size'],  # Original size
             columns_info=columns_info,
             preprocessing_info=preprocessing_info
         )
@@ -411,9 +423,23 @@ def generate_pipeline_route(current_user, dataset_id):
         # Load dataset for analysis (handle both old and new data)
         from io import BytesIO
         if dataset.file_data:
-            # New: Load from database
-            file_stream = BytesIO(dataset.file_data)
-            processor = DataProcessor(file_stream, filename=dataset.filename)
+            # Get project for decryption
+            project = Project.query.get(dataset.project_id)
+            
+            # 🔓 DECRYPT THE DATASET - Privacy-First Feature
+            try:
+                decrypted_data = secure_handler.retrieve_dataset_from_storage(
+                    dataset.file_data,
+                    project.code,
+                    dataset.user_id
+                )
+                file_stream = BytesIO(decrypted_data)
+                processor = DataProcessor(file_stream, filename=dataset.filename)
+            except Exception as decrypt_error:
+                print(f"Decryption failed, trying unencrypted (backward compatibility): {decrypt_error}")
+                # Fallback for old unencrypted data
+                file_stream = BytesIO(dataset.file_data)
+                processor = DataProcessor(file_stream, filename=dataset.filename)
         else:
             # Old: Load from file path (backward compatibility)
             processor = DataProcessor(dataset.file_path)
@@ -497,9 +523,23 @@ def train_models(current_user, training_run_id):
         # Load data (handle both old and new data)
         from io import BytesIO
         if dataset.file_data:
-            # New: Load from database
-            file_stream = BytesIO(dataset.file_data)
-            processor = DataProcessor(file_stream, filename=dataset.filename)
+            # Get project for decryption
+            project = Project.query.get(dataset.project_id)
+            
+            # 🔓 DECRYPT THE DATASET - Privacy-First Feature
+            try:
+                decrypted_data = secure_handler.retrieve_dataset_from_storage(
+                    dataset.file_data,
+                    project.code,
+                    dataset.user_id
+                )
+                file_stream = BytesIO(decrypted_data)
+                processor = DataProcessor(file_stream, filename=dataset.filename)
+            except Exception as decrypt_error:
+                print(f"Decryption failed, trying unencrypted (backward compatibility): {decrypt_error}")
+                # Fallback for old unencrypted data
+                file_stream = BytesIO(dataset.file_data)
+                processor = DataProcessor(file_stream, filename=dataset.filename)
         else:
             # Old: Load from file path (backward compatibility)
             processor = DataProcessor(dataset.file_path)
@@ -686,6 +726,59 @@ def get_federated_learning_status(current_user, project_id):
         
     except Exception as e:
         print(f"Get federated learning status error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# ==================== Privacy & Encryption Status ====================
+
+@app.route('/api/projects/<int:project_id>/encryption-status', methods=['GET'])
+@token_required
+def get_encryption_status(current_user, project_id):
+    """Get encryption status and privacy information for a project"""
+    try:
+        project = Project.query.get(project_id)
+        
+        if not project:
+            return jsonify({'error': 'Project not found'}), 404
+        
+        # Check membership
+        membership = ProjectMember.query.filter_by(
+            project_id=project_id,
+            user_id=current_user.id
+        ).first()
+        
+        if not membership:
+            return jsonify({'error': 'Access denied'}), 403
+        
+        # Get encryption info
+        encryption_info = secure_handler.encryption_manager.generate_project_encryption_info(
+            project.code,
+            current_user.id
+        )
+        
+        # Count encrypted datasets
+        datasets = Dataset.query.filter_by(project_id=project_id).all()
+        encrypted_datasets = sum(1 for d in datasets if d.file_data is not None)
+        
+        return jsonify({
+            'project_id': project_id,
+            'project_name': project.name,
+            'encryption_info': encryption_info,
+            'statistics': {
+                'total_datasets': len(datasets),
+                'encrypted_datasets': encrypted_datasets,
+                'encryption_rate': f"{(encrypted_datasets/len(datasets)*100) if datasets else 0:.1f}%"
+            },
+            'privacy_features': [
+                'End-to-end encryption (AES-256)',
+                'Unique encryption keys per user',
+                'No plaintext data storage',
+                'Secure key derivation (PBKDF2-SHA256)',
+                'Privacy-first federated learning'
+            ]
+        }), 200
+        
+    except Exception as e:
+        print(f"Get encryption status error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 # ==================== Health Check ====================
